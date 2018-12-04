@@ -11,6 +11,7 @@ import argparse
 import numpy as np
 from skimage import io, transform
 from scipy.io import wavfile
+from scipy import signal
 
 class DataGenerator():
     def __init__(self, fft_size, fr, n_frames, source_path, ambient_path, car_path):
@@ -48,6 +49,24 @@ class DataGenerator():
         mixed = source + ambient_scaled + car_scaled
 
         return mixed.astype(np.int16)
+
+    def wav2spec(self, wav, sr):
+        f, t, Zxx = signal.stft(
+                wav, # in librosa, amplitude is devided by 32768
+                fs=sr,
+                nfft=self.fft_size,
+                nperseg=sr // self.frame_rate,
+                noverlap=0)
+        print('\
+            Sample Rate: {}\n\
+            n_fft: {}\n\
+            nperseg: {}\n\
+            noverlap: {}\n'.format(sr, self.fft_size, sr // self.frame_rate, 0))
+
+        spec = np.log10(np.abs(Zxx))
+        print('Spectrogram Shape {}\n'.format(spec.shape))
+
+        return spec
     
     def next_batch(self, batch_size, v_norm=True, a_norm=True, img_size=128):
         N, C, V = [], [], []
@@ -102,32 +121,39 @@ class DataGenerator():
 
                 #mixed = wav_source + gain_ambient * wav_ambient + gain_car * wav_car
                 #mixed = mixed.astype(np.int16)
-                mixed = self.mix_wav(wav_source, wav_ambient, wav_car)
-                # TODO
+                wav_mixed = self.mix_wav(wav_source, wav_ambient, wav_car)
                 # get normalized image
                 img_seq = []
                 for fname in all_frame[frame_idx:frame_idx + self.n_frames]:
                     img = transform.resize(
                             io.imread(fname), 
-                            (img_size, img_size), 
-                            anti_aliasing=True)
+                            (img_size, img_size)) 
+                            #anti_aliasing=True)
 
                     if v_norm:
                         img = (img - img.mean()) / img.std()
                     img_seq.append(img) 
 
-
+                # TODO
                 # get spectrogram clean/noisy
+                spec_source = self.wav2spec(wav_source, sr)
+                spec_noise = self.wav2spec(wav_mixed, sr)
+
+                spec_source = spec_source[frame_idx:frame_idx + self.n_frames]
+                spec_noise = spec_noise[frame_idx:frame_idx + self.n_frames]
+
+                N.append(spec_noise)
+                C.append(spec_source)
+                V.append(img_seq)
 
                 # Test output audio
                 # wavfile.write('out.wav', sr, mixed)
                 
-                V.append(all_frame[frame_idx:frame_idx+self.n_frames])
                 '''
                 n.append(ambient_path + car_path)
                 c.append(source_path)
                 '''
-            yield V
+            yield N, C, V
 
         
 if __name__ == '__main__':
