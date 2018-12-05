@@ -22,6 +22,7 @@ class DataGenerator():
         self.ambient = [] # Path of training ambient noise
         self.car = [] # Path of training car noise
         self.noise_gain_range = 5
+        self.verbose = False
         
         try:
             with open(source_path, 'r') as s, open(ambient_path, 'r') as a, open(car_path, 'r') as c:
@@ -32,6 +33,8 @@ class DataGenerator():
         except IOError as e:
             print('Failed as {}'.format(e.strerror))
 
+    '''
+    # Old version
     def mix_wav(self, source, ambient, car):
         snr_ambient = random.randint(-2, 10)
         snr_car = random.randint(-2, 10)
@@ -47,9 +50,52 @@ class DataGenerator():
         car_scaled = car_amp * car_norm + car.mean()
 
         mixed = source + ambient_scaled + car_scaled
+        
+        return mixed.astype(np.int16)
+    '''
+    
+    def mix_wav(self, source, ambient, car):
+        snr_ambient = random.randint(-5, 10)
+        snr_car = random.randint(-5, 10)
+        
+        source_len, ambient_len, car_len = \
+        source.shape[0], ambient.shape[0], car.shape[0]
+        
+        # Pad wave sequences
+        if ambient_len > source_len:
+            start_idx = random.randint(0, ambient_len - source_len)
+            ambient = ambient[start_idx:start_idx + source_len]
+        
+        elif ambient_len < source_len:
+            front = random.randint(0, source_len - ambient_len - 1)
+            rear = source_len - ambient_len - front
+            ambient = np.pad(ambient, (front, rear), 'wrap')
+            
+        if car_len > source_len:
+            start_idx = random.randint(0, car_len - source_len)
+            car = car[start_idx:start_idx + source_len]
+        
+        elif car_len < source_len:
+            front = random.randint(0, source_len - ambient_len - 1)
+            rear = source_len - car_len - front
+            car = np.pad(car, (front, rear), 'wrap')
+        
+        assert source.shape[0] == ambient.shape[0] == car.shape[0]
+
+        source_amp = sum(abs(source)) / len(source)
+
+        ambient_amp = source_amp / (10 ** (snr_ambient / 20))
+        car_amp = source_amp / (10 ** (snr_car / 20))
+        ambient_norm = (ambient - ambient.mean()) / ambient.std()
+        car_norm = (car - car.mean()) / car.std()
+
+        ambient_scaled = ambient_amp * ambient_norm + ambient.mean()
+        car_scaled = car_amp * car_norm + car.mean()
+
+        mixed = source + ambient_scaled + car_scaled
 
         return mixed.astype(np.int16)
-
+        
     def wav2spec(self, wav, sr):
         f, t, Zxx = signal.stft(
                 wav, # in librosa, amplitude is devided by 32768
@@ -57,14 +103,15 @@ class DataGenerator():
                 nfft=self.fft_size,
                 nperseg=sr // self.frame_rate,
                 noverlap=0)
-        print('\
-            Sample Rate: {}\n\
-            n_fft: {}\n\
-            nperseg: {}\n\
-            noverlap: {}\n'.format(sr, self.fft_size, sr // self.frame_rate, 0))
+        if self.verbose:
+            print('\
+                Sample Rate: {}\n\
+                n_fft: {}\n\
+                nperseg: {}\n\
+                noverlap: {}\n'.format(sr, self.fft_size, sr // self.frame_rate, 0))
 
         spec = np.log10(np.abs(Zxx))
-        print('Spectrogram Shape {}\n'.format(spec.shape))
+        # print('Spectrogram Shape {}\n'.format(spec.shape))
 
         return spec
     
@@ -104,24 +151,31 @@ class DataGenerator():
                 assert len(all_frame) <= wav_source.shape[0]
 
                 frame_idx = random.randint(0, len(all_frame) - self.n_frames) # video frame id
-
-                # slice source
-                source_idx = frame_idx * sr // self.frame_rate
-                offset = sr * self.n_frames // self.frame_rate
-                wav_source = wav_source[source_idx: source_idx + offset]
-
-                # slice noise
-                ambient_idx = random.randint(0, len(wav_ambient) - offset)
-                car_idx = random.randint(0, len(wav_car) - offset)
-
-                wav_ambient = wav_ambient[ambient_idx: ambient_idx + offset]
-                wav_car = wav_car[car_idx: car_idx + offset]
-
-                assert wav_ambient.shape[0] == wav_source.shape[0] == wav_car.shape[0]
-
-                #mixed = wav_source + gain_ambient * wav_ambient + gain_car * wav_car
-                #mixed = mixed.astype(np.int16)
+                
+                # mix source, ambient and car noises
                 wav_mixed = self.mix_wav(wav_source, wav_ambient, wav_car)
+                
+                # get spectrogram
+                spec_source = self.wav2spec(wav_source, sr)
+                spec_noise = self.wav2spec(wav_mixed, sr)
+
+                toggle = 0
+                while spec_source.shape[1] > len(all_frame):
+                    if toggle == -1:
+                        toggle = 0
+                    elif toggle == 0:
+                        toggle = -1
+                    spec_source = np.delete(spec_source, toggle, 1)
+                    spec_noise = np.delete(spec_noise, toggle, 1)
+                
+                assert spec_source.shape[1] == spec_noise.shape[1] == len(all_frame)
+                # print('source:\t{}\nnoise:\t{}\nimage:\t{}\n'.format(spec_source.shape[1], spec_noise.shape[1], len(all_frame)))
+
+                
+                # truncate spectrogram
+                spec_source = spec_source[:, frame_idx:frame_idx + self.n_frames]
+                spec_noise = spec_noise[:, frame_idx:frame_idx + self.n_frames]
+                
                 # get normalized image
                 img_seq = []
                 for fname in all_frame[frame_idx:frame_idx + self.n_frames]:
@@ -132,27 +186,17 @@ class DataGenerator():
 
                     if v_norm:
                         img = (img - img.mean()) / img.std()
+                        
                     img_seq.append(img) 
-
-                # TODO
-                # get spectrogram clean/noisy
-                spec_source = self.wav2spec(wav_source, sr)
-                spec_noise = self.wav2spec(wav_mixed, sr)
-
-                spec_source = spec_source[frame_idx:frame_idx + self.n_frames]
-                spec_noise = spec_noise[frame_idx:frame_idx + self.n_frames]
-
+                
+                
                 N.append(spec_noise)
                 C.append(spec_source)
                 V.append(img_seq)
 
                 # Test output audio
                 # wavfile.write('out.wav', sr, mixed)
-                
-                '''
-                n.append(ambient_path + car_path)
-                c.append(source_path)
-                '''
+
             yield N, C, V
 
         
