@@ -209,7 +209,7 @@ if __name__ == '__main__':
 
     fft_size = 512
     frame_rate = 50
-    n_frames = 5 #TODO: use 5 for real task
+    n_frames = 5
 
     d_gen = DataGenerator(
             fft_size, 
